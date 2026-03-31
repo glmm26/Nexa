@@ -1,4 +1,4 @@
-# Nexa Atelier
+# Nexa Online
 
 Loja de roupas online com frontend em React, backend em Node.js + Express, banco local em SQLite e autenticacao por OTP com envio de email pela API da Brevo.
 
