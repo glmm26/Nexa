@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { SectionHeader } from "../components/ui/SectionHeader";
 import { useToast } from "../context/ToastContext";
 import { useAuth } from "../hooks/useAuth";
@@ -17,15 +17,14 @@ export function LoginPage() {
   const { login, user } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
-  const location = useLocation();
 
   useDocumentTitle("Entrar | NEXA");
 
   useEffect(() => {
     if (user) {
-      navigate(user.adminAuthorized ? "/admin/estoque" : "/perfil", { replace: true });
+      navigate(user.adminAuthorized ? "/admin/estoque" : "/", { replace: true });
     }
-  }, [user]);
+  }, [navigate, user]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -37,12 +36,9 @@ export function LoginPage() {
         response.user.adminAuthorized ? "Acesso administrativo liberado." : "Bem-vindo de volta.",
         "success"
       );
-      navigate(
-        location.state?.from || (response.user.adminAuthorized ? "/admin/estoque" : "/perfil"),
-        {
+      navigate(response.user.adminAuthorized ? "/admin/estoque" : "/", {
         replace: true,
-        }
-      );
+      });
     } catch (error) {
       if (error.requiresVerification) {
         showToast("Confirme o codigo enviado ao seu email antes de entrar.", "info");

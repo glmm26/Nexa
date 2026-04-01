@@ -128,7 +128,7 @@ export function ProductPage() {
   const selectedVariant = variants.find(
     (variant) => variant.size === selectedSize && variant.color === selectedColor
   );
-  const visibleStock = selectedVariant ? selectedVariant.stock : product.stock;
+  const visibleStock = selectedVariant ? selectedVariant.stock : Number(product?.stock || 0);
   const maxSelectableQuantity = Math.max(1, Math.min(visibleStock || 1, 99));
   const isSelectionComplete = Boolean(selectedSize && selectedColor);
   const canAddSelectedVariant = Boolean(selectedVariant && selectedVariant.stock > 0);

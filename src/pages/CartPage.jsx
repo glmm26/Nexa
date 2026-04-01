@@ -31,8 +31,9 @@ export function CartPage() {
     cart,
     changeItem,
     removeItem,
-    completeCheckout,
+    checkoutDraft,
     isCartLoading,
+    saveCheckoutDraft,
     quoteShipping,
     clearShippingQuote,
     shippingQuote,
@@ -60,10 +61,14 @@ export function CartPage() {
 
     setCheckoutData((current) => ({
       ...current,
-      name: user.name,
-      email: user.email,
+      name: current.name || checkoutDraft.name || user.name,
+      email: current.email || checkoutDraft.email || user.email,
+      address: current.address || checkoutDraft.address,
+      city: current.city || checkoutDraft.city,
+      zipCode: current.zipCode || checkoutDraft.zipCode,
+      notes: current.notes || checkoutDraft.notes,
     }));
-  }, [user]);
+  }, [checkoutDraft, user]);
 
   const normalizedCurrentZip = normalizeZipCode(checkoutData.zipCode);
   const hasValidShippingQuote =
@@ -123,19 +128,10 @@ export function CartPage() {
       return;
     }
 
-    setIsSubmitting(true);
-
     try {
-      const response = await completeCheckout(checkoutData);
-      showToast(response.message, "success");
-      setCheckoutData((current) => ({
-        ...current,
-        address: "",
-        city: "",
-        zipCode: "",
-        notes: "",
-      }));
-      navigate("/meus-pedidos");
+      setIsSubmitting(true);
+      saveCheckoutDraft(checkoutData);
+      navigate("/checkout/pagamento");
     } catch (error) {
       showToast(error.message, "error");
     } finally {
@@ -199,7 +195,7 @@ export function CartPage() {
       <SectionHeader
         eyebrow="Carrinho"
         title="Revise os itens e finalize."
-        description="Ajuste quantidades, confira o total e conclua a compra em poucos passos."
+        description="Ajuste quantidades, confira o total, preencha a entrega e siga para o pagamento."
       />
 
       <div className="cart-layout">
@@ -369,7 +365,7 @@ export function CartPage() {
               disabled={isSubmitting || !hasValidShippingQuote}
               type="submit"
             >
-              {isSubmitting ? "Finalizando..." : "Finalizar pedido"}
+              {isSubmitting ? "Abrindo pagamento..." : "Ir para pagamento"}
             </button>
           </form>
         </aside>

@@ -4,6 +4,8 @@ import { ProtectedRoute } from "./components/ui/ProtectedRoute";
 import { AdminOrdersPage } from "./pages/AdminOrdersPage";
 import { AdminProductsPage } from "./pages/AdminProductsPage";
 import { CartPage } from "./pages/CartPage";
+import { CheckoutPaymentPage } from "./pages/CheckoutPaymentPage";
+import { CheckoutSuccessPage } from "./pages/CheckoutSuccessPage";
 import { HomePage } from "./pages/HomePage";
 import { LoginPage } from "./pages/LoginPage";
 import { MyOrdersPage } from "./pages/MyOrdersPage";
@@ -20,6 +22,22 @@ export default function App() {
         <Route path="/" element={<HomePage />} />
         <Route path="/produto/:productId" element={<ProductPage />} />
         <Route path="/carrinho" element={<CartPage />} />
+        <Route
+          path="/checkout/pagamento"
+          element={
+            <ProtectedRoute>
+              <CheckoutPaymentPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/checkout/sucesso"
+          element={
+            <ProtectedRoute>
+              <CheckoutSuccessPage />
+            </ProtectedRoute>
+          }
+        />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/cadastro" element={<RegisterPage />} />
         <Route path="/verificar" element={<VerifyOtpPage />} />

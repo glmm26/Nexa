@@ -9,6 +9,10 @@ import {
 import { createOrder } from "../services/orderService";
 import { useAuthContext } from "./AuthContext";
 
+const SHIPPING_QUOTE_STORAGE_KEY = "nexa_shipping_quote";
+const CHECKOUT_DRAFT_STORAGE_KEY = "nexa_checkout_draft";
+const LAST_ORDER_STORAGE_KEY = "nexa_last_completed_order";
+
 const emptyCart = {
   items: [],
   summary: {
@@ -22,6 +26,43 @@ const emptyCart = {
 };
 
 const CartContext = createContext(null);
+
+function createEmptyCheckoutDraft() {
+  return {
+    address: "",
+    city: "",
+    email: "",
+    name: "",
+    notes: "",
+    zipCode: "",
+  };
+}
+
+function readStoredValue(storageKey, fallbackValue) {
+  if (typeof window === "undefined") {
+    return fallbackValue;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(storageKey);
+    return rawValue ? JSON.parse(rawValue) : fallbackValue;
+  } catch (error) {
+    return fallbackValue;
+  }
+}
+
+function writeStoredValue(storageKey, value) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (value === null) {
+    window.localStorage.removeItem(storageKey);
+    return;
+  }
+
+  window.localStorage.setItem(storageKey, JSON.stringify(value));
+}
 
 function mergeCartWithShipping(cart, shippingQuote = null) {
   const items = Array.isArray(cart?.items) ? cart.items : [];
@@ -44,12 +85,22 @@ export function CartProvider({ children }) {
   const { user, isHydrating } = useAuthContext();
   const [cart, setCart] = useState(emptyCart);
   const [isCartLoading, setIsCartLoading] = useState(false);
-  const [shippingQuote, setShippingQuote] = useState(null);
+  const [shippingQuote, setShippingQuote] = useState(() =>
+    readStoredValue(SHIPPING_QUOTE_STORAGE_KEY, null)
+  );
+  const [checkoutDraft, setCheckoutDraft] = useState(() =>
+    readStoredValue(CHECKOUT_DRAFT_STORAGE_KEY, createEmptyCheckoutDraft())
+  );
+  const [lastCompletedOrder, setLastCompletedOrder] = useState(() =>
+    readStoredValue(LAST_ORDER_STORAGE_KEY, null)
+  );
 
   async function refreshCart() {
     if (!user) {
       setCart(emptyCart);
       setShippingQuote(null);
+      setCheckoutDraft(createEmptyCheckoutDraft());
+      setLastCompletedOrder(null);
       return emptyCart;
     }
 
@@ -73,8 +124,22 @@ export function CartProvider({ children }) {
     refreshCart().catch(() => {
       setCart(emptyCart);
       setShippingQuote(null);
+      setCheckoutDraft(createEmptyCheckoutDraft());
+      setLastCompletedOrder(null);
     });
   }, [user, isHydrating]);
+
+  useEffect(() => {
+    writeStoredValue(SHIPPING_QUOTE_STORAGE_KEY, shippingQuote);
+  }, [shippingQuote]);
+
+  useEffect(() => {
+    writeStoredValue(CHECKOUT_DRAFT_STORAGE_KEY, checkoutDraft);
+  }, [checkoutDraft]);
+
+  useEffect(() => {
+    writeStoredValue(LAST_ORDER_STORAGE_KEY, lastCompletedOrder);
+  }, [lastCompletedOrder]);
 
   async function addItem(payload) {
     const response = await addCartItem(payload);
@@ -112,10 +177,31 @@ export function CartProvider({ children }) {
     setCart((current) => mergeCartWithShipping(current, null));
   }
 
-  async function completeCheckout(payload) {
+  function saveCheckoutDraft(payload) {
+    setCheckoutDraft((current) => ({
+      ...current,
+      ...payload,
+    }));
+  }
+
+  function clearCheckoutDraft() {
+    setCheckoutDraft(createEmptyCheckoutDraft());
+  }
+
+  function clearLastCompletedOrder() {
+    setLastCompletedOrder(null);
+  }
+
+  async function completeCheckout(payload, paymentDetails = null) {
     const response = await createOrder(payload);
     setShippingQuote(null);
+    setCheckoutDraft(createEmptyCheckoutDraft());
     setCart(mergeCartWithShipping(response.cart));
+    setLastCompletedOrder({
+      order: response.order,
+      payment: paymentDetails,
+      createdAt: new Date().toISOString(),
+    });
     return response;
   }
 
@@ -125,12 +211,17 @@ export function CartProvider({ children }) {
         addItem,
         cart,
         changeItem,
+        checkoutDraft,
+        clearCheckoutDraft,
+        clearLastCompletedOrder,
         clearShippingQuote,
         completeCheckout,
         isCartLoading,
+        lastCompletedOrder,
         quoteShipping,
         refreshCart,
         removeItem,
+        saveCheckoutDraft,
         shippingQuote,
       }}
     >

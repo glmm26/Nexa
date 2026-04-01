@@ -72,6 +72,14 @@ EMAIL_PROVIDER=console
 npm start
 ```
 
+Se preferir rodar apenas o backend com:
+
+```bash
+node server.js
+```
+
+o servidor agora gera a pasta `dist/` automaticamente na primeira subida quando o build do frontend ainda nao existir.
+
 4. Acesse:
 
 ```text

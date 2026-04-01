@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const session = require("express-session");
@@ -16,10 +17,42 @@ const { initializeDatabase } = require("./database/database");
 const { respondWithError } = require("./utils/respondWithError");
 
 const SQLiteStore = SQLiteStoreFactory(session);
+const distDir = path.join(__dirname, "dist");
+const distIndexPath = path.join(distDir, "index.html");
+
+async function ensureFrontendBuild() {
+  if (fs.existsSync(distIndexPath)) {
+    return;
+  }
+
+  console.log("Build do frontend nao encontrado. Gerando dist automaticamente...");
+
+  let viteBuild;
+  try {
+    ({ build: viteBuild } = await import("vite"));
+  } catch (error) {
+    error.message =
+      "Nao foi possivel carregar o Vite para gerar o frontend. Execute `npm install` antes de iniciar o servidor.\n" +
+      error.message;
+    throw error;
+  }
+
+  await viteBuild({
+    configFile: path.join(__dirname, "vite.config.mjs"),
+    logLevel: "info",
+  });
+
+  if (!fs.existsSync(distIndexPath)) {
+    const error = new Error(
+      "O build do frontend foi executado, mas `dist/index.html` nao foi encontrado."
+    );
+    error.code = "FRONTEND_BUILD_MISSING";
+    throw error;
+  }
+}
 
 function createApp() {
   const app = express();
-  const distDir = path.join(__dirname, "dist");
 
   app.use(
     helmet({
@@ -81,6 +114,7 @@ function createApp() {
 
 async function startServer(port = process.env.PORT || 3000) {
   await initializeDatabase();
+  await ensureFrontendBuild();
   const app = createApp();
 
   return new Promise((resolve) => {

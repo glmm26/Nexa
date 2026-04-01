@@ -1,10 +1,13 @@
 const {
+  PRODUCT_STATUS_ACTIVE,
+  PRODUCT_STATUS_INACTIVE,
   createProduct,
   deleteProductById,
   getProductById,
   hasOrdersForProduct,
   listCategories,
   listProducts,
+  listStockMovementsByProductIds,
   updateProductById,
 } = require("../database/database");
 const { createHttpError } = require("../utils/httpError");
@@ -28,12 +31,36 @@ function mapProduct(product) {
     price: Number(product.preco),
     imageUrl: product.imagem_url,
     category: product.categoria,
+    status: product.status || PRODUCT_STATUS_ACTIVE,
     stock: Number(product.estoque),
     inStock: Number(product.estoque) > 0,
     availableSizes: product.tamanhos_disponiveis || [],
     availableColors: product.cores_disponiveis || [],
     variants,
   };
+}
+
+function mapStockMovement(movement) {
+  return {
+    id: movement.id,
+    size: movement.tamanho,
+    color: movement.cor,
+    delta: Number(movement.delta),
+    previousStock: Number(movement.estoque_anterior),
+    currentStock: Number(movement.estoque_atual),
+    reason: movement.motivo || "",
+    createdAt: movement.criado_em,
+  };
+}
+
+function normalizeProductStatus(value) {
+  const normalizedStatus = String(value || "").trim().toLowerCase();
+
+  if (normalizedStatus === PRODUCT_STATUS_INACTIVE) {
+    return PRODUCT_STATUS_INACTIVE;
+  }
+
+  return PRODUCT_STATUS_ACTIVE;
 }
 
 function parseVariationInput(value) {
@@ -96,8 +123,10 @@ function normalizeProductPayload(payload) {
   const imagemUrl = String(payload.imageUrl || "").trim();
   const categoria = String(payload.category || "").trim().toLowerCase();
   const preco = Number(payload.price);
+  const status = normalizeProductStatus(payload.status);
   const tamanhosDisponiveis = parseVariationInput(payload.availableSizes);
   const coresDisponiveis = normalizeColorInput(payload.availableColors);
+  const movementReason = String(payload.movementReason || "").trim();
   const variantStocks = normalizeVariantStocks(
     payload.variantStocks,
     tamanhosDisponiveis,
@@ -126,9 +155,11 @@ function normalizeProductPayload(payload) {
     preco,
     imagemUrl,
     categoria,
+    status,
     tamanhosDisponiveis,
     coresDisponiveis,
     variantStocks,
+    movementReason,
   };
 }
 
@@ -136,6 +167,7 @@ async function getCatalog({ category, search, featuredOnly } = {}) {
   const products = await listProducts({
     category,
     search,
+    status: PRODUCT_STATUS_ACTIVE,
     limit: featuredOnly ? 4 : undefined,
   });
   const categories = await listCategories();
@@ -149,7 +181,7 @@ async function getCatalog({ category, search, featuredOnly } = {}) {
 async function getProductDetails(productId) {
   const product = await getProductById(productId);
 
-  if (!product) {
+  if (!product || product.status === PRODUCT_STATUS_INACTIVE) {
     throw createHttpError(404, "Produto nao encontrado.");
   }
 
@@ -169,9 +201,21 @@ async function getProductDetails(productId) {
 
 async function getAdminProducts() {
   const products = await listProducts();
+  const mappedProducts = products.map(mapProduct);
+  const movements = await listStockMovementsByProductIds(mappedProducts.map((product) => product.id));
+  const movementsByProductId = new Map();
+
+  for (const movement of movements) {
+    const group = movementsByProductId.get(movement.product_id) || [];
+    group.push(mapStockMovement(movement));
+    movementsByProductId.set(movement.product_id, group);
+  }
 
   return {
-    products: products.map(mapProduct),
+    products: mappedProducts.map((product) => ({
+      ...product,
+      recentMovements: movementsByProductId.get(product.id) || [],
+    })),
   };
 }
 

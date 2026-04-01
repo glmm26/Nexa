@@ -5,6 +5,8 @@ const { open } = require("sqlite");
 const DATABASE_PATH = path.join(__dirname, "store.db");
 const USER_ROLE_CLIENT = "cliente";
 const USER_ROLE_ADMIN = "admin";
+const PRODUCT_STATUS_ACTIVE = "ativo";
+const PRODUCT_STATUS_INACTIVE = "inativo";
 
 let databasePromise;
 
@@ -187,6 +189,7 @@ async function createTables(db) {
       preco REAL NOT NULL,
       imagem_url TEXT NOT NULL,
       categoria TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT '${PRODUCT_STATUS_ACTIVE}',
       estoque INTEGER NOT NULL DEFAULT 0,
       tamanhos_disponiveis TEXT NOT NULL DEFAULT '[]',
       cores_disponiveis TEXT NOT NULL DEFAULT '[]'
@@ -283,6 +286,19 @@ async function createTables(db) {
       FOREIGN KEY (pedido_id) REFERENCES pedidos(id) ON DELETE CASCADE,
       FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS stock_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      tamanho TEXT NOT NULL DEFAULT '',
+      cor TEXT NOT NULL DEFAULT '',
+      delta INTEGER NOT NULL,
+      estoque_anterior INTEGER NOT NULL,
+      estoque_atual INTEGER NOT NULL,
+      motivo TEXT,
+      criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (product_id) REFERENCES produtos(id) ON DELETE CASCADE
+    );
   `);
 }
 
@@ -370,6 +386,89 @@ async function replaceProductVariants(db, productId, variantStocks) {
   await syncProductStock(db, productId);
 }
 
+function normalizeProductStatus(status) {
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  return normalizedStatus === PRODUCT_STATUS_INACTIVE
+    ? PRODUCT_STATUS_INACTIVE
+    : PRODUCT_STATUS_ACTIVE;
+}
+
+function createVariantSnapshotMap(variants = []) {
+  const snapshot = new Map();
+
+  for (const variant of variants) {
+    snapshot.set(`${variant.size || variant.tamanho}::${variant.color || variant.cor}`, {
+      size: variant.size || variant.tamanho || "",
+      color: variant.color || variant.cor || "",
+      stock: Number(variant.stock ?? variant.estoque ?? 0),
+    });
+  }
+
+  return snapshot;
+}
+
+function createVariantMovementEntries({ productId, previousVariants = [], nextVariants = [], reason }) {
+  const previousMap = createVariantSnapshotMap(previousVariants);
+  const nextMap = createVariantSnapshotMap(nextVariants);
+  const keys = new Set([...previousMap.keys(), ...nextMap.keys()]);
+  const entries = [];
+
+  for (const key of keys) {
+    const previousVariant = previousMap.get(key) || {
+      size: key.split("::")[0] || "",
+      color: key.split("::")[1] || "",
+      stock: 0,
+    };
+    const nextVariant = nextMap.get(key) || previousVariant;
+    const delta = Number(nextVariant.stock) - Number(previousVariant.stock);
+
+    if (delta === 0) {
+      continue;
+    }
+
+    entries.push({
+      productId,
+      size: previousVariant.size || nextVariant.size || "",
+      color: previousVariant.color || nextVariant.color || "",
+      delta,
+      previousStock: Number(previousVariant.stock) || 0,
+      nextStock: Number(nextVariant.stock) || 0,
+      reason: reason || null,
+    });
+  }
+
+  return entries;
+}
+
+async function recordStockMovementEntries(db, entries = []) {
+  if (!entries.length) {
+    return;
+  }
+
+  const statement = await db.prepare(`
+    INSERT INTO stock_movements (
+      product_id, tamanho, cor, delta, estoque_anterior, estoque_atual, motivo
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  try {
+    for (const entry of entries) {
+      await statement.run(
+        entry.productId,
+        entry.size || "",
+        entry.color || "",
+        Number(entry.delta) || 0,
+        Number(entry.previousStock) || 0,
+        Number(entry.nextStock) || 0,
+        entry.reason || null
+      );
+    }
+  } finally {
+    await statement.finalize();
+  }
+}
+
 async function ensureProductVariants(db) {
   const products = await db.all(
     `
@@ -426,7 +525,19 @@ async function ensureSchemaUpdates(db) {
   ]);
 
   const productColumns = await getTableColumns(db, "produtos");
+  const hasStatusColumn = productColumns.some((column) => column.name === "status");
   const hasStockColumn = productColumns.some((column) => column.name === "estoque");
+
+  if (!hasStatusColumn) {
+    await db.exec(
+      `ALTER TABLE produtos ADD COLUMN status TEXT NOT NULL DEFAULT '${PRODUCT_STATUS_ACTIVE}'`
+    );
+  }
+
+  await db.run(
+    `UPDATE produtos SET status = ? WHERE status IS NULL OR TRIM(status) = ''`,
+    [PRODUCT_STATUS_ACTIVE]
+  );
 
   if (!hasStockColumn) {
     await db.exec(`ALTER TABLE produtos ADD COLUMN estoque INTEGER NOT NULL DEFAULT 0`);
@@ -544,6 +655,23 @@ async function ensureSchemaUpdates(db) {
         status TEXT NOT NULL,
         data TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+      )
+    `);
+  }
+
+  if (!(await tableExists(db, "stock_movements"))) {
+    await db.exec(`
+      CREATE TABLE stock_movements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        tamanho TEXT NOT NULL DEFAULT '',
+        cor TEXT NOT NULL DEFAULT '',
+        delta INTEGER NOT NULL,
+        estoque_anterior INTEGER NOT NULL,
+        estoque_atual INTEGER NOT NULL,
+        motivo TEXT,
+        criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (product_id) REFERENCES produtos(id) ON DELETE CASCADE
       )
     `);
   }
@@ -702,6 +830,7 @@ function normalizeProduct(row) {
     preco: Number(row.preco),
     imagem_url: row.imagem_url,
     categoria: row.categoria,
+    status: normalizeProductStatus(row.status),
     estoque: Number(row.estoque),
     tamanhos_disponiveis: parseStringArray(row.tamanhos_disponiveis),
     cores_disponiveis: parseStringArray(row.cores_disponiveis),
@@ -745,6 +874,24 @@ function normalizeOrder(row) {
     usuario_nome: row.usuario_nome,
     usuario_email: row.usuario_email,
     usuario_role: row.usuario_role,
+  };
+}
+
+function normalizeStockMovement(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    product_id: row.product_id,
+    tamanho: row.tamanho || "",
+    cor: row.cor || "",
+    delta: Number(row.delta),
+    estoque_anterior: Number(row.estoque_anterior),
+    estoque_atual: Number(row.estoque_atual),
+    motivo: row.motivo || "",
+    criado_em: row.criado_em,
   };
 }
 
@@ -949,7 +1096,7 @@ async function getProductVariantBySelection({ productId, size, color }) {
   return normalizeProductVariant(row);
 }
 
-async function listProducts({ category, search, limit } = {}) {
+async function listProducts({ category, search, status, limit } = {}) {
   const db = await connectDatabase();
   const conditions = [];
   const params = [];
@@ -964,6 +1111,11 @@ async function listProducts({ category, search, limit } = {}) {
     params.push(`%${search}%`, `%${search}%`);
   }
 
+  if (status) {
+    conditions.push("LOWER(status) = LOWER(?)");
+    params.push(status);
+  }
+
   let query = `
     SELECT
       id,
@@ -972,6 +1124,7 @@ async function listProducts({ category, search, limit } = {}) {
       preco,
       imagem_url,
       categoria,
+      status,
       estoque,
       tamanhos_disponiveis,
       cores_disponiveis
@@ -1012,14 +1165,15 @@ async function getProductById(id) {
     `
       SELECT
         id,
-        nome,
-        descricao,
-        preco,
-        imagem_url,
-        categoria,
-        estoque,
-        tamanhos_disponiveis,
-        cores_disponiveis
+      nome,
+      descricao,
+      preco,
+      imagem_url,
+      categoria,
+      status,
+      estoque,
+      tamanhos_disponiveis,
+      cores_disponiveis
       FROM produtos
       WHERE id = ?
     `,
@@ -1042,17 +1196,19 @@ async function createProduct({
   preco,
   imagemUrl,
   categoria,
+  status,
   tamanhosDisponiveis,
   coresDisponiveis,
   variantStocks,
+  movementReason,
 }) {
   const db = await connectDatabase();
   const result = await db.run(
     `
       INSERT INTO produtos (
-        nome, descricao, preco, imagem_url, categoria, estoque, tamanhos_disponiveis, cores_disponiveis
+        nome, descricao, preco, imagem_url, categoria, status, estoque, tamanhos_disponiveis, cores_disponiveis
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       nome,
@@ -1060,6 +1216,7 @@ async function createProduct({
       preco,
       imagemUrl,
       categoria,
+      normalizeProductStatus(status),
       0,
       serializeStringArray(tamanhosDisponiveis),
       serializeStringArray(coresDisponiveis),
@@ -1067,14 +1224,36 @@ async function createProduct({
   );
 
   await replaceProductVariants(db, result.lastID, variantStocks);
+  await recordStockMovementEntries(
+    db,
+    createVariantMovementEntries({
+      productId: result.lastID,
+      previousVariants: [],
+      nextVariants: variantStocks,
+      reason: movementReason || "Cadastro inicial do produto",
+    })
+  );
   return getProductById(result.lastID);
 }
 
 async function updateProductById(
   productId,
-  { nome, descricao, preco, imagemUrl, categoria, tamanhosDisponiveis, coresDisponiveis, variantStocks }
+  {
+    nome,
+    descricao,
+    preco,
+    imagemUrl,
+    categoria,
+    status,
+    tamanhosDisponiveis,
+    coresDisponiveis,
+    variantStocks,
+    movementReason,
+  }
 ) {
   const db = await connectDatabase();
+  const previousVariants = await listProductVariantsByProductIds([productId]);
+
   await db.run(
     `
       UPDATE produtos
@@ -1084,6 +1263,7 @@ async function updateProductById(
         preco = ?,
         imagem_url = ?,
         categoria = ?,
+        status = ?,
         tamanhos_disponiveis = ?,
         cores_disponiveis = ?
       WHERE id = ?
@@ -1094,6 +1274,7 @@ async function updateProductById(
       preco,
       imagemUrl,
       categoria,
+      normalizeProductStatus(status),
       serializeStringArray(tamanhosDisponiveis),
       serializeStringArray(coresDisponiveis),
       productId,
@@ -1101,7 +1282,56 @@ async function updateProductById(
   );
 
   await replaceProductVariants(db, productId, variantStocks);
+  await recordStockMovementEntries(
+    db,
+    createVariantMovementEntries({
+      productId,
+      previousVariants,
+      nextVariants: variantStocks,
+      reason: movementReason || "Ajuste manual no painel administrativo",
+    })
+  );
   return getProductById(productId);
+}
+
+async function listStockMovementsByProductIds(productIds, limitPerProduct = 6) {
+  if (!productIds.length) {
+    return [];
+  }
+
+  const db = await connectDatabase();
+  const placeholders = productIds.map(() => "?").join(", ");
+  const rows = await db.all(
+    `
+      SELECT
+        id,
+        product_id,
+        tamanho,
+        cor,
+        delta,
+        estoque_anterior,
+        estoque_atual,
+        motivo,
+        criado_em
+      FROM stock_movements
+      WHERE product_id IN (${placeholders})
+      ORDER BY criado_em DESC, id DESC
+    `,
+    productIds
+  );
+
+  const totalsByProductId = new Map();
+
+  return rows.filter((row) => {
+    const currentTotal = totalsByProductId.get(row.product_id) || 0;
+
+    if (currentTotal >= limitPerProduct) {
+      return false;
+    }
+
+    totalsByProductId.set(row.product_id, currentTotal + 1);
+    return true;
+  }).map(normalizeStockMovement);
 }
 
 async function updateProductStockById(productId, estoque) {
@@ -1276,8 +1506,18 @@ async function createOrder({
 
   try {
     const touchedProductIds = new Set();
+    const orderStockEntries = [];
 
     for (const item of items) {
+      const currentVariant = await db.get(
+        `
+          SELECT estoque
+          FROM product_variants
+          WHERE product_id = ? AND tamanho = ? AND cor = ?
+        `,
+        [item.product.id, item.selectedSize, item.selectedColor]
+      );
+
       const updated = await db.run(
         `
           UPDATE product_variants
@@ -1300,6 +1540,14 @@ async function createOrder({
       }
 
       touchedProductIds.add(item.product.id);
+      orderStockEntries.push({
+        productId: item.product.id,
+        size: item.selectedSize,
+        color: item.selectedColor,
+        delta: -item.quantity,
+        previousStock: Number(currentVariant?.estoque || 0),
+        nextStock: Number(currentVariant?.estoque || 0) - item.quantity,
+      });
     }
 
     for (const productId of touchedProductIds) {
@@ -1357,6 +1605,14 @@ async function createOrder({
       result.lastID,
       status,
     ]);
+
+    await recordStockMovementEntries(
+      db,
+      orderStockEntries.map((entry) => ({
+        ...entry,
+        reason: `Venda no pedido #${result.lastID}`,
+      }))
+    );
 
     await clearCartByUserId(userId);
     await db.exec("COMMIT");
@@ -1613,6 +1869,7 @@ module.exports = {
   listCategories,
   listOrdersByUserId,
   listProducts,
+  listStockMovementsByProductIds,
   markUserAsVerified,
   removeCartItem,
   updateCartItemQuantity,
@@ -1623,4 +1880,6 @@ module.exports = {
   updateUserOtp,
   updateUserPassword,
   updateUserRole,
+  PRODUCT_STATUS_ACTIVE,
+  PRODUCT_STATUS_INACTIVE,
 };
